@@ -1,0 +1,191 @@
+import os, zipfile, textwrap
+
+base = "/mnt/data/platformer_game"
+os.makedirs(base, exist_ok=True)
+
+html = r'''<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Lucky World - 2D Platformer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+  <header><div class="logo">⭐ LUCKY WORLD</div><div class="hint">← → / A D để chạy · Space / ↑ để nhảy</div></header>
+  <main id="gameWrap">
+    <canvas id="game" aria-label="Game đi cảnh Lucky World"></canvas>
+    <div class="hud">
+      <div class="pill">🪙 <span id="coins">0</span></div>
+      <div class="pill">❤️ <span id="lives">3</span></div>
+      <button id="restart" class="restart">↻ Chơi lại</button>
+    </div>
+    <div id="message" class="message">Nhảy đập Lucky Block để nhận xu!</div>
+    <div class="touch-controls">
+      <button id="left" aria-label="Đi sang trái">◀</button>
+      <button id="right" aria-label="Đi sang phải">▶</button>
+      <button id="jump" aria-label="Nhảy">⬆</button>
+    </div>
+  </main>
+  <footer>Thu thập xu · Né quái nấm · Khám phá thế giới may mắn</footer>
+</div>
+<script src="game.js"></script>
+</body>
+</html>'''
+
+css = r'''*{box-sizing:border-box}
+:root{--sky:#79d5ff;--ink:#17334b}
+body{margin:0;background:linear-gradient(#e9f8ff,#d7f0ff);font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:var(--ink);min-height:100vh;display:flex;justify-content:center;align-items:center}
+.page{width:min(1100px,100%);padding:12px}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 10px;flex-wrap:wrap}
+.logo{font-weight:1000;font-size:clamp(18px,3vw,28px);letter-spacing:1px;color:#1769a6;text-shadow:0 2px #fff}
+.hint{font-size:13px;color:#42657b;background:#fff9;padding:8px 12px;border-radius:99px}
+#gameWrap{position:relative;width:100%;border:5px solid white;border-radius:14px;overflow:hidden;box-shadow:0 12px 35px #397ca433;background:#79d5ff;touch-action:none}
+canvas{display:block;width:100%;height:auto;aspect-ratio:16/9;touch-action:none}
+.hud{position:absolute;top:12px;left:12px;right:12px;display:flex;gap:8px;align-items:center;pointer-events:none}
+.pill,.restart{border:2px solid #fff;background:#17334bdc;color:white;border-radius:99px;padding:7px 13px;font-weight:800;box-shadow:0 3px 0 #17334b33}
+.restart{margin-left:auto;pointer-events:auto;cursor:pointer;font:inherit;font-weight:800}
+.message{position:absolute;top:58px;left:50%;transform:translateX(-50%);background:#fffdf0e8;border:2px solid #fff;border-radius:12px;padding:8px 13px;font-size:clamp(11px,1.8vw,15px);font-weight:800;white-space:nowrap;box-shadow:0 4px 0 #17334b20;transition:opacity .3s}
+.touch-controls{position:absolute;bottom:12px;left:12px;right:12px;display:flex;gap:10px;justify-content:space-between;pointer-events:none}
+.touch-controls button{pointer-events:auto;width:clamp(48px,8vw,70px);height:clamp(48px,8vw,70px);border:3px solid #ffffffdd;border-radius:20px;background:#17334bbd;color:white;font-size:25px;font-weight:900;box-shadow:0 5px 0 #17334b45;touch-action:none;user-select:none;-webkit-user-select:none}
+#jump{margin-left:auto;background:#ff9f1cdd}
+footer{text-align:center;color:#54778b;font-size:13px;padding:12px 0}
+@media(min-width:800px){.touch-controls{opacity:.25}.touch-controls:hover{opacity:1}}
+@media(max-width:550px){.page{padding:5px}header{margin:3px 3px 8px}.hint{font-size:11px}.pill{padding:5px 9px}.message{top:50px}.touch-controls{bottom:8px;left:8px;right:8px}}
+'''
+js = r'''(() => {
+const canvas=document.getElementById('game'),ctx=canvas.getContext('2d');
+const coinsEl=document.getElementById('coins'),livesEl=document.getElementById('lives'),message=document.getElementById('message');
+const W=960,H=540;canvas.width=W;canvas.height=H;
+const keys={left:false,right:false,jump:false};
+let camera=0,coins=0,lives=3,frame=0,won=false;
+const worldWidth=3300, gravity=.58;
+const platforms=[
+ {x:0,y:455,w:560,h:85},{x:660,y:405,w:220,h:30},{x:965,y:350,w:210,h:30},
+ {x:1260,y:410,w:230,h:30},{x:1580,y:355,w:220,h:30},{x:1880,y:425,w:260,h:30},
+ {x:2240,y:365,w:230,h:30},{x:2570,y:415,w:260,h:30},{x:2920,y:360,w:380,h:30}
+];
+const blocks=[{x:270,y:355,hit:false},{x:720,y:305,hit:false},{x:1015,y:250,hit:false},{x:1650,y:305,hit:false},{x:2310,y:315,hit:false},{x:2760,y:355,hit:false}];
+const player={x:80,y:400,w:30,h:48,vx:0,vy:0,onGround:false,face:1,invuln:0};
+let enemies=[{x:755,y:369,vx:1.1,alive:true},{x:1080,y:314,vx:-1,alive:true},{x:1665,y:319,vx:1.15,alive:true},{x:2360,y:329,vx:-1.2,alive:true},{x:2770,y:379,vx:1,alive:true}];
+let particles=[];
+function reset(){player.x=80;player.y=400;player.vx=player.vy=0;player.invuln=0;camera=0;coins=0;lives=3;won=false;blocks.forEach(b=>b.hit=false);enemies.forEach(e=>e.alive=true);particles=[];updateHud();message.textContent='Nhảy đập Lucky Block để nhận xu!';}
+function updateHud(){coinsEl.textContent=coins;livesEl.textContent=lives;}
+function rect(x,y,w,h,c){ctx.fillStyle=c;ctx.fillRect(x,y,w,h)}
+function roundRect(x,y,w,h,r,c){ctx.fillStyle=c;ctx.beginPath();ctx.roundRect(x,y,w,h,r);ctx.fill()}
+function cloud(x,y,s){ctx.save();ctx.translate(x,y);ctx.scale(s,s);ctx.fillStyle='#ffffff';ctx.beginPath();ctx.ellipse(0,10,30,18,0,0,Math.PI*2);ctx.ellipse(24,0,26,24,0,0,Math.PI*2);ctx.ellipse(48,10,30,18,0,0,Math.PI*2);ctx.fill();ctx.restore()}
+function drawSky(){
+ let g=ctx.createLinearGradient(0,0,0,H);g.addColorStop(0,'#70d2ff');g.addColorStop(1,'#c1f0ff');rect(0,0,W,H,g);
+ // distant soft hills
+ ctx.fillStyle='#9ce5c1';ctx.beginPath();ctx.moveTo(0,420);for(let x=0;x<=W+40;x+=40)ctx.lineTo(x,390+Math.sin((x+camera*.15)/90)*20);ctx.lineTo(W,H);ctx.lineTo(0,H);ctx.fill();
+ for(let i=0;i<10;i++){let x=((i*157-camera*.22)%(W+130)+W+130)%(W+130)-60;cloud(x,55+(i%4)*48,.65+(i%3)*.18)}
+}
+function drawGround(p){
+ rect(p.x,p.y,p.w,p.h,'#8b4b19');rect(p.x,p.y,p.w,10,'#20c85a');
+ // soil strata
+ rect(p.x,p.y+10,p.w,5,'#6d3918');
+ for(let x=p.x+15;x<p.x+p.w-8;x+=43){rect(x,p.y+23+(x%3)*5,7,5,'#a96a2e');rect(x+17,p.y+47,4,4,'#633714')}
+ for(let x=p.x+8;x<p.x+p.w-10;x+=25){ctx.fillStyle='#42dc67';ctx.beginPath();ctx.moveTo(x,p.y+3);ctx.lineTo(x+4,p.y-5);ctx.lineTo(x+7,p.y+3);ctx.fill()}
+}
+function drawBlock(b){
+ const y=b.y+(b.bump||0),x=b.x;
+ ctx.save();ctx.shadowColor='#b86b00';ctx.shadowBlur=10;
+ rect(x,y,38,38,b.hit?'#eaa832':'#ffb800');ctx.shadowBlur=0;
+ rect(x+3,y+3,32,32,'#ffd83d');rect(x,y,38,4,'#ffef8c');rect(x,y+34,38,4,'#d77b10');
+ ctx.fillStyle='#a95108';ctx.font='900 29px system-ui';ctx.textAlign='center';ctx.fillText(b.hit?'✓':'?',x+19,y+29);
+ ctx.fillStyle='#fff4b0';ctx.fillRect(x+5,y+6,5,3);ctx.restore();
+}
+function drawPlayer(){
+ const x=player.x,y=player.y;
+ if(player.invuln>0&&Math.floor(frame/5)%2===0)return;
+ // shadow
+ ctx.fillStyle='#236c8c33';ctx.beginPath();ctx.ellipse(x+15,y+48,17,4,0,0,Math.PI*2);ctx.fill();
+ // shoes
+ roundRect(x+2,y+38,13,9,4,'#5b2b18');roundRect(x+16,y+38,13,9,4,'#5b2b18');
+ // blue overalls and red shirt
+ roundRect(x+3,y+18,24,24,5,'#0875ed');roundRect(x+2,y+14,26,14,5,'#e93236');
+ rect(x+7,y+24,5,15,'#0060cf');rect(x+19,y+24,5,15,'#0060cf');
+ ctx.fillStyle='#ffdf55';ctx.beginPath();ctx.arc(x+10,y+27,2.5,0,Math.PI*2);ctx.arc(x+21,y+27,2.5,0,Math.PI*2);ctx.fill();
+ // face
+ roundRect(x+6,y+5,20,18,5,'#ffc58d');
+ // hair / moustache
+ rect(x+5,y+5,20,5,'#4c251b');rect(x+4,y+8,4,7,'#4c251b');
+ // cap
+ roundRect(x+3,y,24,8,4,'#e51f2a');roundRect(x+1,y+4,28,5,3,'#ff3941');
+ // eyes
+ rect(x+11,y+9,4,7,'#fff');rect(x+20,y+9,4,7,'#fff');rect(x+13,y+11,2,4,'#1678d5');rect(x+21,y+11,2,4,'#1678d5');
+ roundRect(x+11,y+17,13,4,2,'#4a2118');rect(x+13,y+17,7,2,'#fff');
+}
+function drawGoomba(e){
+ const x=e.x,y=e.y;
+ // feet
+ roundRect(x+3,y+25,17,10,5,'#593018');roundRect(x+22,y+25,17,10,5,'#593018');
+ // brown mushroom body
+ ctx.fillStyle='#75401f';ctx.beginPath();ctx.ellipse(x+21,y+17,22,17,0,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle='#98552a';ctx.beginPath();ctx.ellipse(x+20,y+12,22,15,0,Math.PI,Math.PI*2);ctx.fill();
+ // angry eyebrows
+ ctx.strokeStyle='#2b160e';ctx.lineWidth=4;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(x+5,y+7);ctx.lineTo(x+15,y+11);ctx.moveTo(x+27,y+11);ctx.lineTo(x+38,y+6);ctx.stroke();
+ // eyes
+ roundRect(x+8,y+8,11,15,5,'#fff');roundRect(x+24,y+8,11,15,5,'#fff');
+ ctx.fillStyle='#19110c';ctx.beginPath();ctx.ellipse(x+14,y+16,3,5,0,0,Math.PI*2);ctx.ellipse(x+29,y+16,3,5,0,0,Math.PI*2);ctx.fill();
+ // tiny fangs
+ ctx.fillStyle='#fff4d8';ctx.beginPath();ctx.moveTo(x+7,y+22);ctx.lineTo(x+12,y+22);ctx.lineTo(x+10,y+28);ctx.fill();ctx.beginPath();ctx.moveTo(x+33,y+22);ctx.lineTo(x+38,y+22);ctx.lineTo(x+35,y+28);ctx.fill();
+}
+function burst(x,y,n,color){for(let i=0;i<n;i++)particles.push({x,y,vx:(Math.random()-.5)*5,vy:-Math.random()*5-1,life:35,color})}
+function drawParticles(){for(const p of particles){ctx.globalAlpha=Math.max(0,p.life/35);ctx.fillStyle=p.color;ctx.beginPath();ctx.arc(p.x-camera,p.y,4,0,Math.PI*2);ctx.fill();ctx.globalAlpha=1}}
+function overlap(a,b){return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y}
+function update(){
+ frame++;
+ if(!won){
+  player.vx=(keys.right?3.4:0)-(keys.left?3.4:0);if(player.vx)player.face=Math.sign(player.vx);
+  if(keys.jump&&player.onGround){player.vy=-12.2;player.onGround=false;keys.jump=false}
+  player.vy+=gravity;player.x=Math.max(0,Math.min(worldWidth-player.w,player.x+player.vx));player.y+=player.vy;player.onGround=false;
+  for(const p of platforms){if(player.x+player.w>p.x&&player.x<p.x+p.w&&player.y+player.h>=p.y&&player.y+player.h<=p.y+18&&player.vy>=0){player.y=p.y-player.h;player.vy=0;player.onGround=true}}
+  for(const b of blocks){
+   b.bump=Math.max(0,(b.bump||0)*.65);
+   if(player.x+player.w>b.x&&player.x<b.x+38&&player.y<b.y+38&&player.y+player.h>b.y&&player.vy<0){
+    player.y=b.y+38;player.vy=1;
+    if(!b.hit){b.hit=true;b.bump=-9;coins+=10;updateHud();burst(b.x+19-camera,b.y,14,'#ffcb21');message.textContent='✨ Lucky Block! +10 xu!';}
+   }
+  }
+  for(const e of enemies){if(!e.alive)continue;e.x+=e.vx;let plat=platforms.find(p=>e.x+40>p.x&&e.x<p.x+p.w&&Math.abs((e.y+35)-p.y)<3);if(!plat||e.x<p.x||e.x+40>p.x+p.w)e.vx*=-1;
+   if(overlap({x:player.x,y:player.y,w:player.w,h:player.h},{x:e.x,y:e.y,w:40,h:34})){
+    if(player.vy>1&&player.y+player.h<e.y+19){e.alive=false;player.vy=-8;coins+=5;updateHud();burst(e.x-camera,e.y,12,'#c58a54')}
+    else if(player.invuln<=0){lives--;player.invuln=90;player.vx=player.x<e.x?-5:5;player.vy=-6;updateHud();if(lives<=0){message.textContent='Hết mạng rồi! Nhấn Chơi lại để thử tiếp.';won=true}}
+   }
+  }
+  if(player.y>H+100){lives--;updateHud();player.x=Math.max(30,player.x-100);player.y=250;player.vy=0;if(lives<=0){won=true;message.textContent='Hết mạng rồi! Nhấn Chơi lại.'}}
+  if(player.invuln>0)player.invuln--;
+  if(player.x>worldWidth-100){won=true;message.textContent='🏆 Bạn đã hoàn thành màn chơi!'}
+ }
+ camera=Math.max(0,Math.min(worldWidth-W,player.x-W*.32));
+ particles.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.vy+=.15;p.life--});particles=particles.filter(p=>p.life>0);
+}
+function render(){
+ drawSky();ctx.save();ctx.translate(-camera,0);
+ for(const p of platforms)drawGround(p);
+ for(const b of blocks)drawBlock(b);
+ // coins
+ for(let i=0;i<14;i++){let x=400+i*205,y=310+(i%3)*-24;ctx.fillStyle='#ffad18';ctx.beginPath();ctx.ellipse(x,y,9,12,0,0,Math.PI*2);ctx.fill();ctx.strokeStyle='#fff078';ctx.lineWidth=3;ctx.stroke();ctx.fillStyle='#fff3a3';ctx.fillRect(x-2,y-6,3,8)}
+ for(const e of enemies)if(e.alive)drawGoomba(e);
+ drawPlayer();ctx.restore();drawParticles();
+}
+function loop(){update();render();requestAnimationFrame(loop)}
+function setKey(k,v){if(k==='ArrowLeft'||k==='a'||k==='A')keys.left=v;if(k==='ArrowRight'||k==='d'||k==='D')keys.right=v;if(k==='ArrowUp'||k===' '||k==='w'||k==='W'){if(v)keys.jump=true}}
+window.addEventListener('keydown',e=>{if(['ArrowLeft','ArrowRight','ArrowUp',' '].includes(e.key))e.preventDefault();setKey(e.key,true)});
+window.addEventListener('keyup',e=>setKey(e.key,false));
+function bindButton(id,key){const el=document.getElementById(id);const down=e=>{e.preventDefault();if(key==='jump')keys.jump=true;else keys[key]=true};const up=e=>{e.preventDefault();if(key!=='jump')keys[key]=false};el.addEventListener('pointerdown',down);['pointerup','pointercancel','pointerleave'].forEach(ev=>el.addEventListener(ev,up))}
+bindButton('left','left');bindButton('right','right');bindButton('jump','jump');
+document.getElementById('restart').addEventListener('click',reset);
+loop();
+})();'''
+
+for name, content in {"index.html":html,"style.css":css,"game.js":js,"README.md":"# Lucky World\nGame đi cảnh 2D chạy trên trình duyệt, hỗ trợ máy tính và điện thoại.\n\n## Chạy thử\nMở `index.html` bằng trình duyệt.\n\n## Đăng lên GitHub Pages\n1. Tạo repository Public.\n2. Tải `index.html`, `style.css`, `game.js` lên thư mục gốc.\n3. Vào Settings → Pages.\n4. Chọn Deploy from a branch, nhánh `main`, thư mục `/(root)`, rồi Save.\n"} .items():
+    with open(os.path.join(base,name),"w",encoding="utf-8") as f:f.write(content)
+
+zip_path="/mnt/data/lucky_world_github_game.zip"
+with zipfile.ZipFile(zip_path,"w",zipfile.ZIP_DEFLATED) as z:
+    for name in ["index.html","style.css","game.js","README.md"]:
+        z.write(os.path.join(base,name),arcname=name)
+print(zip_path, os.path.getsize(zip_path))
